@@ -30,18 +30,6 @@ struct CNodeCombinedStats {
 };
 Q_DECLARE_METATYPE(CNodeCombinedStats*)
 
-class NodeLessThan
-{
-public:
-    NodeLessThan(int nColumn, Qt::SortOrder fOrder) :
-        column(nColumn), order(fOrder) {}
-    bool operator()(const CNodeCombinedStats &left, const CNodeCombinedStats &right) const;
-
-private:
-    int column;
-    Qt::SortOrder order;
-};
-
 /**
    Qt model providing information about connected peers, similar to the
    "getpeerinfo" RPC call. Used by the rpc console UI.
@@ -53,18 +41,18 @@ class PeerTableModel : public QAbstractTableModel
 public:
     explicit PeerTableModel(interfaces::Node& node, QObject* parent);
     ~PeerTableModel();
-    int getRowByNodeId(NodeId nodeid);
     void startAutoRefresh();
     void stopAutoRefresh();
 
     enum ColumnIndex {
         NetNodeId = 0,
-        Address = 1,
-        Network = 2,
-        Ping = 3,
-        Sent = 4,
-        Received = 5,
-        Subversion = 6
+        Address,
+        ConnectionType,
+        Network,
+        Ping,
+        Sent,
+        Received,
+        Subversion
     };
 
     enum {
@@ -79,7 +67,6 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     QModelIndex index(int row, int column, const QModelIndex &parent) const override;
     Qt::ItemFlags flags(const QModelIndex &index) const override;
-    void sort(int column, Qt::SortOrder order) override;
     /*@}*/
 
 public Q_SLOTS:
@@ -87,7 +74,31 @@ public Q_SLOTS:
 
 private:
     interfaces::Node& m_node;
-    const QStringList columns{tr("Peer Id"), tr("Address"), tr("Network"), tr("Ping"), tr("Sent"), tr("Received"), tr("User Agent")};
+    const QStringList columns{
+        /*: Title of Peers Table column which contains a
+            unique number used to identify a connection. */
+        tr("Peer"),
+        /*: Title of Peers Table column which contains the
+            IP/Onion/I2P address of the connected peer. */
+        tr("Address"),
+        /*: Title of Peers Table column which describes the type of
+            peer connection. The "type" describes why the connection exists. */
+        tr("Type"),
+        /*: Title of Peers Table column which states the network the peer
+            connected through. */
+        tr("Network"),
+        /*: Title of Peers Table column which indicates the current latency
+            of the connection with the peer. */
+        tr("Ping"),
+        /*: Title of Peers Table column which indicates the total amount of
+            network information we have sent to the peer. */
+        tr("Sent"),
+        /*: Title of Peers Table column which indicates the total amount of
+            network information we have received from the peer. */
+        tr("Received"),
+        /*: Title of Peers Table column which contains the peer's
+            User Agent string. */
+        tr("User Agent")};
     std::unique_ptr<PeerTablePriv> priv;
     QTimer *timer;
 };

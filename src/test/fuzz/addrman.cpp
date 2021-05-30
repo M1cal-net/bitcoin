@@ -1,4 +1,4 @@
-// Copyright (c) 2020 The Bitcoin Core developers
+// Copyright (c) 2020-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -60,7 +60,10 @@ FUZZ_TARGET_INIT(addrman, initialize_addrman)
                 (void)addr_man.Select(fuzzed_data_provider.ConsumeBool());
             },
             [&] {
-                (void)addr_man.GetAddr(fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096), fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096));
+                (void)addr_man.GetAddr(
+                    /* max_addresses */ fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096),
+                    /* max_pct */ fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096),
+                    /* network */ std::nullopt);
             },
             [&] {
                 const std::optional<CAddress> opt_address = ConsumeDeserializable<CAddress>(fuzzed_data_provider);
@@ -104,7 +107,7 @@ FUZZ_TARGET_INIT(addrman, initialize_addrman)
             [&] {
                 const std::optional<CService> opt_service = ConsumeDeserializable<CService>(fuzzed_data_provider);
                 if (opt_service) {
-                    addr_man.SetServices(*opt_service, ServiceFlags{fuzzed_data_provider.ConsumeIntegral<uint64_t>()});
+                    addr_man.SetServices(*opt_service, ConsumeWeakEnum(fuzzed_data_provider, ALL_SERVICE_FLAGS));
                 }
             },
             [&] {
