@@ -8,6 +8,7 @@
 #include <chain.h>
 #include <consensus/consensus.h>
 #include <consensus/validation.h>
+#include <external_signer.h>
 #include <fs.h>
 #include <interfaces/chain.h>
 #include <interfaces/wallet.h>
@@ -1807,7 +1808,7 @@ bool CWallet::SignTransaction(CMutableTransaction& tx) const
         coins[input.prevout] = Coin(wtx.tx->vout[input.prevout.n], wtx.m_confirm.block_height, wtx.IsCoinBase());
     }
     std::map<int, std::string> input_errors;
-    return SignTransaction(tx, coins, SIGHASH_ALL, input_errors);
+    return SignTransaction(tx, coins, SIGHASH_DEFAULT, input_errors);
 }
 
 bool CWallet::SignTransaction(CMutableTransaction& tx, const std::map<COutPoint, Coin>& coins, int sighash, std::map<int, std::string>& input_errors) const
@@ -1830,6 +1831,7 @@ TransactionError CWallet::FillPSBT(PartiallySignedTransaction& psbtx, bool& comp
     if (n_signed) {
         *n_signed = 0;
     }
+    const PrecomputedTransactionData txdata = PrecomputePSBTData(psbtx);
     LOCK(cs_wallet);
     // Get all of the previous transactions
     for (unsigned int i = 0; i < psbtx.tx->vin.size(); ++i) {
@@ -1856,7 +1858,7 @@ TransactionError CWallet::FillPSBT(PartiallySignedTransaction& psbtx, bool& comp
     // Fill in information from ScriptPubKeyMans
     for (ScriptPubKeyMan* spk_man : GetAllScriptPubKeyMans()) {
         int n_signed_this_spkm = 0;
-        TransactionError res = spk_man->FillPSBT(psbtx, sighash_type, sign, bip32derivs, &n_signed_this_spkm);
+        TransactionError res = spk_man->FillPSBT(psbtx, txdata, sighash_type, sign, bip32derivs, &n_signed_this_spkm);
         if (res != TransactionError::OK) {
             return res;
         }
@@ -1907,7 +1909,13 @@ OutputType CWallet::TransactionChangeType(const std::optional<OutputType>& chang
         int witnessversion = 0;
         std::vector<unsigned char> witnessprogram;
         if (recipient.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
-            return OutputType::BECH32;
+            if (GetScriptPubKeyMan(OutputType::BECH32M, true)) {
+                return OutputType::BECH32M;
+            } else if (GetScriptPubKeyMan(OutputType::BECH32, true)) {
+                return OutputType::BECH32;
+            } else {
+                return m_default_address_type;
+            }
         }
     }
 
@@ -2110,7 +2118,7 @@ bool CWallet::GetNewDestination(const OutputType type, const std::string label, 
         spk_man->TopUp();
         result = spk_man->GetNewDestination(type, dest, error);
     } else {
-        error = strprintf("Error: No %s addresses available.", FormatOutputType(type));
+        error = strprintf(_("Error: No %s addresses available."), FormatOutputType(type)).translated;
     }
     if (result) {
         SetAddressBook(dest, label, "receive");
@@ -2125,8 +2133,7 @@ bool CWallet::GetNewChangeDestination(const OutputType type, CTxDestination& des
     error.clear();
 
     ReserveDestination reservedest(this, type);
-    if (!reservedest.GetReservedDestination(dest, true)) {
-        error = _("Error: Keypool ran out, please call keypoolrefill first").translated;
+    if (!reservedest.GetReservedDestination(dest, true, error)) {
         return false;
     }
 
@@ -2173,10 +2180,11 @@ std::set<CTxDestination> CWallet::GetLabelAddresses(const std::string& label) co
     return result;
 }
 
-bool ReserveDestination::GetReservedDestination(CTxDestination& dest, bool internal)
+bool ReserveDestination::GetReservedDestination(CTxDestination& dest, bool internal, std::string& error)
 {
     m_spk_man = pwallet->GetScriptPubKeyMan(type, internal);
     if (!m_spk_man) {
+        error = strprintf(_("Error: No %s addresses available."), FormatOutputType(type)).translated;
         return false;
     }
 
@@ -2186,7 +2194,7 @@ bool ReserveDestination::GetReservedDestination(CTxDestination& dest, bool inter
         m_spk_man->TopUp();
 
         CKeyPool keypool;
-        if (!m_spk_man->GetReservedDestination(type, internal, address, nIndex, keypool)) {
+        if (!m_spk_man->GetReservedDestination(type, internal, address, nIndex, keypool, error)) {
             return false;
         }
         fInternal = keypool.fInternal;
@@ -2215,7 +2223,6 @@ void ReserveDestination::ReturnDestination()
 
 bool CWallet::DisplayAddress(const CTxDestination& dest)
 {
-#ifdef ENABLE_EXTERNAL_SIGNER
     CScript scriptPubKey = GetScriptForDestination(dest);
     const auto spk_man = GetScriptPubKeyMan(scriptPubKey);
     if (spk_man == nullptr) {
@@ -2227,9 +2234,6 @@ bool CWallet::DisplayAddress(const CTxDestination& dest)
     }
     ExternalSigner signer = ExternalSignerScriptPubKeyMan::GetExternalSigner();
     return signer_spk_man->DisplayAddress(scriptPubKey, signer);
-#else
-    return false;
-#endif
 }
 
 void CWallet::LockCoin(const COutPoint& output)
@@ -3035,7 +3039,7 @@ void CWallet::SetupLegacyScriptPubKeyMan()
     }
 
     auto spk_manager = std::unique_ptr<ScriptPubKeyMan>(new LegacyScriptPubKeyMan(*this));
-    for (const auto& type : OUTPUT_TYPES) {
+    for (const auto& type : LEGACY_OUTPUT_TYPES) {
         m_internal_spk_managers[type] = spk_manager.get();
         m_external_spk_managers[type] = spk_manager.get();
     }
@@ -3063,12 +3067,8 @@ void CWallet::ConnectScriptPubKeyManNotifiers()
 void CWallet::LoadDescriptorScriptPubKeyMan(uint256 id, WalletDescriptor& desc)
 {
     if (IsWalletFlagSet(WALLET_FLAG_EXTERNAL_SIGNER)) {
-#ifdef ENABLE_EXTERNAL_SIGNER
         auto spk_manager = std::unique_ptr<ScriptPubKeyMan>(new ExternalSignerScriptPubKeyMan(*this, desc));
         m_spk_managers[id] = std::move(spk_manager);
-#else
-        throw std::runtime_error(std::string(__func__) + ": Compiled without external signing support (required for external signing)");
-#endif
     } else {
         auto spk_manager = std::unique_ptr<ScriptPubKeyMan>(new DescriptorScriptPubKeyMan(*this, desc));
         m_spk_managers[id] = std::move(spk_manager);
@@ -3092,6 +3092,11 @@ void CWallet::SetupDescriptorScriptPubKeyMans()
 
         for (bool internal : {false, true}) {
             for (OutputType t : OUTPUT_TYPES) {
+                if (t == OutputType::BECH32M) {
+                    // Skip taproot (bech32m) for now
+                    // TODO: Setup taproot (bech32m) descriptors by default
+                    continue;
+                }
                 auto spk_manager = std::unique_ptr<DescriptorScriptPubKeyMan>(new DescriptorScriptPubKeyMan(*this, internal));
                 if (IsCrypted()) {
                     if (IsLocked()) {
@@ -3108,7 +3113,6 @@ void CWallet::SetupDescriptorScriptPubKeyMans()
             }
         }
     } else {
-#ifdef ENABLE_EXTERNAL_SIGNER
         ExternalSigner signer = ExternalSignerScriptPubKeyMan::GetExternalSigner();
 
         // TODO: add account parameter
@@ -3135,9 +3139,6 @@ void CWallet::SetupDescriptorScriptPubKeyMans()
                 AddActiveScriptPubKeyMan(id, t, internal);
             }
         }
-#else
-        throw std::runtime_error(std::string(__func__) + ": Compiled without external signing support (required for external signing)");
-#endif // ENABLE_EXTERNAL_SIGNER
     }
 }
 
